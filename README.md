@@ -28,10 +28,13 @@ A aplicação está disponível online no seguinte endereço:
 - Download dos resultados em formato Excel.
 
 ## 📁 Estrutura do Repositório
-.
+
 ├── app.py # Aplicação principal Streamlit
+
 ├── requirements.txt # Dependências do projeto
+
 ├── runtime.txt # Versão do Python utilizada
+
 └── README.md # Documentação do projeto
 
 
