@@ -1,177 +1,168 @@
-# app.py
-# Imports
-import pandas            as pd
-import streamlit         as st
-import numpy             as np
+import streamlit as st
+import pandas as pd
+import pickle
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.decomposition import PCA
 
-from datetime            import datetime
-from PIL                 import Image
-from io                  import BytesIO
+# ── Classes do pipeline (necessárias para carregar o pickle) ──────────────────
 
-# @st.cache(experimental_allow_widgets=True) # Versão antiga, vamos trocar pelo cache_data
-@st.cache_data
-def convert_df(df):
-    return df.to_csv(index=False).encode('utf-8')
+num_cols_pipe = ['qtd_filhos', 'idade', 'tempo_emprego', 'qt_pessoas_residencia', 'renda']
+cat_cols_pipe = ['sexo', 'posse_de_veiculo', 'posse_de_imovel',
+                 'tipo_renda', 'educacao', 'estado_civil', 'tipo_residencia']
 
-# Função para converter o df para excel
-@st.cache_data
-def to_excel(df):
-    output = BytesIO()
-    writer = pd.ExcelWriter(output, engine='xlsxwriter')
-    df.to_excel(writer, index=False, sheet_name='Sheet1')
-    writer.close()  # Use .close() ao invés de .save() para garantir que tudo seja escrito
-    processed_data = output.getvalue()
-    return processed_data
+class ImputadorMisto(BaseEstimator, TransformerMixin):
+    def __init__(self, num_cols, cat_cols):
+        self.num_cols = num_cols
+        self.cat_cols = cat_cols
+
+    def fit(self, X, y=None):
+        X = pd.DataFrame(X) if not isinstance(X, pd.DataFrame) else X
+        self.medianas_ = X[self.num_cols].median()
+        self.modas_    = X[self.cat_cols].mode().iloc[0]
+        return self
+
+    def transform(self, X, y=None):
+        X = X.copy()
+        for col in self.num_cols:
+            X[col] = X[col].fillna(self.medianas_[col])
+        for col in self.cat_cols:
+            X[col] = X[col].fillna(self.modas_[col])
+        return X
 
 
-### Criando os segmentos
-def recencia_class(x, r, q_dict):
-    """Classifica como melhor o menor quartil 
-       x = valor da linha,
-       r = recencia,
-       q_dict = quartil dicionario   
-    """
-    if x <= q_dict[r][0.25]:
-        return 'A'
-    elif x <= q_dict[r][0.50]:
-        return 'B'
-    elif x <= q_dict[r][0.75]:
-        return 'C'
-    else:
-        return 'D'
+class WinsorizadorOutliers(BaseEstimator, TransformerMixin):
+    def __init__(self, num_cols, p_low=0.01, p_high=0.99):
+        self.num_cols = num_cols
+        self.p_low    = p_low
+        self.p_high   = p_high
 
-def freq_val_class(x, fv, q_dict):
-    """Classifica como melhor o maior quartil 
-       x = valor da linha,
-       fv = frequencia ou valor,
-       q_dict = quartil dicionario   
-    """
-    if x <= q_dict[fv][0.25]:
-        return 'D'
-    elif x <= q_dict[fv][0.50]:
-        return 'C'
-    elif x <= q_dict[fv][0.75]:
-        return 'B'
-    else:
-        return 'A'
+    def fit(self, X, y=None):
+        X = pd.DataFrame(X) if not isinstance(X, pd.DataFrame) else X
+        self.lower_ = X[self.num_cols].quantile(self.p_low)
+        self.upper_ = X[self.num_cols].quantile(self.p_high)
+        return self
 
-# Função principal da aplicação
-def main():
-    # Configuração inicial da página da aplicação
-    st.set_page_config(page_title = 'RFV', \
-        layout="wide",
-        initial_sidebar_state='expanded'
-    )
+    def transform(self, X, y=None):
+        X = X.copy()
+        for col in self.num_cols:
+            X[col] = X[col].clip(self.lower_[col], self.upper_[col])
+        return X
 
-    # Título principal da aplicação
-    st.write("""# RFV
 
-    RFV significa recência, frequência, valor e é utilizado para segmentação de clientes baseado no comportamento 
-    de compras dos clientes e agrupa eles em clusters parecidos. Utilizando esse tipo de agrupamento podemos realizar 
-    ações de marketing e CRM melhores direcionadas, ajudando assim na personalização do conteúdo e até a retenção de clientes.
+class CriadorDummies(BaseEstimator, TransformerMixin):
+    def __init__(self, cat_cols):
+        self.cat_cols = cat_cols
 
-    Para cada cliente é preciso calcular cada uma das componentes abaixo:
+    def fit(self, X, y=None):
+        X = pd.DataFrame(X) if not isinstance(X, pd.DataFrame) else X
+        self.encoder_ = OneHotEncoder(
+            sparse_output=False, handle_unknown='ignore', drop='first')
+        self.encoder_.fit(X[self.cat_cols])
+        self.other_cols_ = [c for c in X.columns if c not in self.cat_cols]
+        return self
 
-    - Recência (R): Quantidade de dias desde a última compra.
-    - Frequência (F): Quantidade total de compras no período.
-    - Valor (V): Total de dinheiro gasto nas compras do período.
+    def transform(self, X, y=None):
+        X = pd.DataFrame(X) if not isinstance(X, pd.DataFrame) else X
+        dummies = pd.DataFrame(
+            self.encoder_.transform(X[self.cat_cols]),
+            columns=self.encoder_.get_feature_names_out(self.cat_cols),
+            index=X.index)
+        return pd.concat([X[self.other_cols_].reset_index(drop=True),
+                          dummies.reset_index(drop=True)], axis=1)
 
-    E é isso que iremos fazer abaixo.
+
+class AplicadorPCA(BaseEstimator, TransformerMixin):
+    def __init__(self, n_components=5):
+        self.n_components = n_components
+
+    def fit(self, X, y=None):
+        self.pca_ = PCA(n_components=self.n_components, random_state=42)
+        self.pca_.fit(X)
+        return self
+
+    def transform(self, X, y=None):
+        return self.pca_.transform(X)
+
+
+# ── Aplicação Streamlit ───────────────────────────────────────────────────────
+
+st.set_page_config(page_title="Credit Scoring", page_icon="💳", layout="wide")
+st.title("💳 Credit Scoring — Escoragem de Crédito")
+st.markdown("Faça upload de um CSV e obtenha a probabilidade de inadimplência para cada cliente.")
+
+@st.cache_resource
+def carregar_modelo():
+    with open("model_final.pkl", "rb") as f:
+        return pickle.load(f)
+
+model = carregar_modelo()
+
+st.sidebar.header("📂 Carregar dados")
+arquivo = st.sidebar.file_uploader("Selecione um arquivo CSV", type=["csv"])
+
+if arquivo is not None:
+    df = pd.read_csv(arquivo)
+    st.subheader("Pré-visualização dos dados")
+    st.dataframe(df.head(10))
+    st.info(f"Total de registros: {len(df):,}")
+
+    colunas_remover = [c for c in ["data_ref", "index", "mau"] if c in df.columns]
+    X = df.drop(columns=colunas_remover)
+
+    if st.sidebar.button("🚀 Escorar base"):
+        with st.spinner("Calculando scores..."):
+            try:
+                probs = model.predict_proba(X)[:, 1]
+                df_resultado = df.copy()
+                df_resultado["score_mau"] = probs.round(4)
+                df_resultado["classificacao"] = np.where(probs >= 0.5, "Mau", "Bom")
+
+                st.subheader("✅ Resultado da escoragem")
+                st.dataframe(df_resultado)
+
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Total de clientes", f"{len(df_resultado):,}")
+                col2.metric("% Previstos como Mau",
+                            f"{(df_resultado['classificacao']=='Mau').mean():.1%}")
+                col3.metric("Score médio", f"{probs.mean():.4f}")
+
+                csv_resultado = df_resultado.to_csv(index=False).encode("utf-8")
+                st.download_button("⬇️ Baixar resultado em CSV",
+                                   data=csv_resultado,
+                                   file_name="resultado_scoring.csv",
+                                   mime="text/csv")
+
+                fig, ax = plt.subplots(figsize=(8, 4))
+                ax.hist(probs, bins=40, color="steelblue", edgecolor="white")
+                ax.axvline(0.5, color="red", linestyle="--", label="Threshold 0.5")
+                ax.set_xlabel("Probabilidade de Inadimplência")
+                ax.set_ylabel("Frequência")
+                ax.set_title("Distribuição dos Scores")
+                ax.legend()
+                st.pyplot(fig)
+
+            except Exception as e:
+                st.error(f"Erro ao escorar a base: {e}")
+else:
+    st.info("⬅️ Faça upload de um CSV na barra lateral para começar.")
+    st.markdown("""
+### Colunas esperadas no CSV:
+| Coluna | Tipo |
+|---|---|
+| sexo | M / F |
+| posse_de_veiculo | S / N |
+| posse_de_imovel | S / N |
+| qtd_filhos | int |
+| tipo_renda | str |
+| educacao | str |
+| estado_civil | str |
+| tipo_residencia | str |
+| idade | int |
+| tempo_emprego | float (pode ser nulo) |
+| qt_pessoas_residencia | float |
+| renda | float |
     """)
-    st.markdown("---")
-    
-    # Apresenta a imagem na barra lateral da aplicação
-    # image = Image.open("Bank-Branding.jpg")
-    # st.sidebar.image(image)
-
-    # Botão para carregar arquivo na aplicação
-    st.sidebar.write("## Suba o arquivo")
-    data_file_1 = st.sidebar.file_uploader("Bank marketing data", type = ['csv','xlsx'])
-
-    # Verifica se há conteúdo carregado na aplicação
-    if (data_file_1 is not None):
-        df_compras = pd.read_csv(data_file_1, infer_datetime_format=True, parse_dates=['DiaCompra'])
-
-        st.write('## Recência (R)')
-
-        
-        dia_atual = df_compras['DiaCompra'].max()
-        st.write('Dia máximo na base de dados: ', dia_atual)
-
-        st.write('Quantos dias faz que o cliente fez a sua última compra?')
-
-        df_recencia = df_compras.groupby(by='ID_cliente', as_index=False)['DiaCompra'].max()
-        df_recencia.columns = ['ID_cliente','DiaUltimaCompra']
-        df_recencia['Recencia'] = df_recencia['DiaUltimaCompra'].apply(lambda x: (dia_atual - x).days)
-        st.write(df_recencia.head())
-
-        df_recencia.drop('DiaUltimaCompra', axis=1, inplace=True)
-
-        st.write('## Frequência (F)')
-        st.write('Quantas vezes cada cliente comprou com a gente?')
-        df_frequencia = df_compras[['ID_cliente','CodigoCompra']].groupby('ID_cliente').count().reset_index()
-        df_frequencia.columns = ['ID_cliente','Frequencia']
-        st.write(df_frequencia.head())
-
-        st.write('## Valor (V)')
-        st.write('Quanto que cada cliente gastou no periodo?')
-        df_valor = df_compras[['ID_cliente','ValorTotal']].groupby('ID_cliente').sum().reset_index()
-        df_valor.columns = ['ID_cliente','Valor']
-        st.write(df_valor.head())
-        
-
-        st.write('## Tabela RFV final')
-        df_RF = df_recencia.merge(df_frequencia, on='ID_cliente')
-        df_RFV = df_RF.merge(df_valor, on='ID_cliente')
-        df_RFV.set_index('ID_cliente', inplace=True)
-        st.write(df_RFV.head())
-
-        st.write('## Segmentação utilizando o RFV')
-        st.write("Um jeito de segmentar os clientes é criando quartis para cada componente do RFV, sendo que o melhor quartil é chamado de 'A', o segundo melhor quartil de 'B', o terceiro melhor de 'C' e o pior de 'D'. O melhor e o pior depende da componente. Po exemplo, quanto menor a recência melhor é o cliente (pois ele comprou com a gente tem pouco tempo) logo o menor quartil seria classificado como 'A', já pra componente frêquencia a lógica se inverte, ou seja, quanto maior a frêquencia do cliente comprar com a gente, melhor ele/a é, logo, o maior quartil recebe a letra 'A'.")
-        st.write('Se a gente tiver interessado em mais ou menos classes, basta a gente aumentar ou diminuir o número de quantils pra cada componente.')
-
-        st.write('Quartis para o RFV')
-        quartis = df_RFV.quantile(q=[0.25,0.5,0.75])
-        st.write(quartis)
-
-        st.write('Tabela após a criação dos grupos')
-        df_RFV['R_quartil'] = df_RFV['Recencia'].apply(recencia_class,
-                                                        args=('Recencia', quartis))
-        df_RFV['F_quartil'] = df_RFV['Frequencia'].apply(freq_val_class,
-                                                        args=('Frequencia', quartis))
-        df_RFV['V_quartil'] = df_RFV['Valor'].apply(freq_val_class,
-                                                    args=('Valor', quartis))
-        df_RFV['RFV_Score'] = (df_RFV.R_quartil 
-                            + df_RFV.F_quartil 
-                            + df_RFV.V_quartil)
-        st.write(df_RFV.head())
-
-        st.write('Quantidade de clientes por grupos')
-        st.write(df_RFV['RFV_Score'].value_counts())
-
-        st.write('#### Clientes com menor recência, maior frequência e maior valor gasto')
-        st.write(df_RFV[df_RFV['RFV_Score']=='AAA'].sort_values('Valor', ascending=False).head(10))
-
-        st.write('### Ações de marketing/CRM')
-
-        dict_acoes = {'AAA': 'Enviar cupons de desconto, Pedir para indicar nosso produto pra algum amigo, Ao lançar um novo produto enviar amostras grátis pra esses.',
-        'DDD': 'Churn! clientes que gastaram bem pouco e fizeram poucas compras, fazer nada',
-        'DAA': 'Churn! clientes que gastaram bastante e fizeram muitas compras, enviar cupons de desconto para tentar recuperar',
-        'CAA': 'Churn! clientes que gastaram bastante e fizeram muitas compras, enviar cupons de desconto para tentar recuperar'
-        }
-
-        df_RFV['acoes de marketing/crm'] = df_RFV['RFV_Score'].map(dict_acoes)
-        st.write(df_RFV.head())
-
-
-        # df_RFV.to_excel('./auxiliar/output/RFV_.xlsx')
-        df_xlsx = to_excel(df_RFV)
-        st.download_button(label='📥 Download',
-                            data=df_xlsx ,
-                            file_name= 'RFV_.xlsx')
-
-        st.write('Quantidade de clientes por tipo de ação')
-        st.write(df_RFV['acoes de marketing/crm'].value_counts(dropna=False))
-
-if __name__ == '__main__':
-    main()
