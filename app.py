@@ -110,6 +110,13 @@ if arquivo is not None:
     st.dataframe(df.head(10))
     st.info(f"Total de registros: {len(df):,}")
 
+    # Converter colunas booleanas para S/N (caso o CSV venha com True/False)
+    bool_map = {True: 'S', False: 'N', 'True': 'S', 'False': 'N',
+                True: 'S', False: 'N', 1: 'S', 0: 'N'}
+    for col in ['posse_de_veiculo', 'posse_de_imovel']:
+        if col in df.columns:
+            df[col] = df[col].map(lambda v: bool_map.get(v, v))
+
     colunas_remover = [c for c in ["data_ref", "index", "mau"] if c in df.columns]
     X = df.drop(columns=colunas_remover)
 
