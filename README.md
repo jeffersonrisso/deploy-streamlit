@@ -7,7 +7,7 @@ Construcao de um modelo de **credit scoring** para cartao de credito com 15 safr
 
 ## Demo
 
-https://github.com/jeffersonrisso/deploy-streamlit/raw/main/demo.mp4
+https://github.com/user-attachments/assets/bd3e418e-b6e5-42e0-89ea-6655e7f41f9f
 
 ---
 
